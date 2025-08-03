@@ -1,0 +1,11 @@
+{
+  "block.creativeprototyper.creative_table": "Creative Table",
+  "gui.creativeprototyper.creative_table": "Creative Table",
+  "gui.creativeprototyper.scan_range": "Scan Range:",
+  "gui.creativeprototyper.range_field": "Enter range (8-64)",
+  "gui.creativeprototyper.scan_area": "Scan Area",
+  "gui.creativeprototyper.scanning": "Scanning...",
+  "gui.creativeprototyper.scan_again": "Scan Again",
+  "gui.creativeprototyper.teleport": "Teleport to Creative Dimension",
+  "gui.creativeprototyper.export_schematic": "Export Schematic"
+}

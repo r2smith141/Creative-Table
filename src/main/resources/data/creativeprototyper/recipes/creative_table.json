@@ -1,0 +1,33 @@
+
+{
+"type": "minecraft:crafting_shaped",
+"pattern": [
+    "#E#",
+    "gRg",
+    "_C_"
+],
+"key": {
+    "#": {
+        "item": "minecraft:amethyst_shard"
+    },
+    "E": {
+        "item": "minecraft:ender_eye"
+    },
+    "g": {
+        "item": "minecraft:gold_ingot"
+    },
+    "R": {
+        "item": "minecraft:redstone"
+    },
+    "_": {
+        "item": "minecraft:quartz_slab"
+    },
+    "C": {
+        "item": "minecraft:chiseled_quartz_block"
+    }
+},
+"result": {
+    "item": "creativeprototyper:creative_table",
+    "count": 1
+  }
+}

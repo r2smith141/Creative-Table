@@ -1,0 +1,238 @@
+package com.craigsmods.creativeprototyper.util;
+
+import com.craigsmods.creativeprototyper.CreativePrototyper;
+import com.craigsmods.creativeprototyper.dimension.CreativeDimensionManager;
+import com.craigsmods.creativeprototyper.dimension.CreativeDimensionManager.TableKey;
+import com.craigsmods.creativeprototyper.dimension.TablePersistenceManager;
+import com.mojang.logging.LogUtils;
+
+import net.minecraft.core.BlockPos;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.event.level.BlockEvent;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.fml.common.Mod;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+/**
+ * Handles cleaning up data for tables that no longer exist
+ 
+@Mod.EventBusSubscriber(modid = CreativePrototyper.MOD_ID)
+public class DataCleanupManager {
+    private static final org.slf4j.Logger LOGGER = LogUtils.getLogger();
+    
+    // Track tables that have been broken
+    private static final Map<BlockPos, ResourceKey<Level>> brokenTables = new HashMap<>();
+    
+    // Counter for periodic verification
+    private static int cleanupCounter = 0;
+    private static final int CLEANUP_INTERVAL = 6000; // 5 minutes (300 seconds * 20 ticks)
+    
+    /**
+     * Listen for block break events to track when tables are broken
+     */
+    @SubscribeEvent
+    public static void onBlockBreak(BlockEvent.BreakEvent event) {
+        if (event.getState().getBlock() instanceof com.craigsmods.creativeprototyper.block.CreativeTableBlock) {
+            BlockPos pos = event.getPos();
+            ResourceKey<Level> dimension = ((Level)event.getLevel()).dimension();
+            
+            // Add to broken tables list for cleanup
+            brokenTables.put(pos, dimension);
+            LOGGER.info("Marked creative table at {} in {} for data cleanup", pos, dimension.location());
+        }
+    }
+    
+
+
+
+    /**
+     * Initialize the cleanup manager
+     * Call this during mod setup
+     */
+    public static void init() {
+        LOGGER.info("Initializing Creative Prototyper data cleanup system");
+        // Reset state variables
+        brokenTables.clear();
+        cleanupCounter = 0;
+        
+        // Register to Forge event bus (although this is also handled by the @Mod.EventBusSubscriber annotation)
+        MinecraftForge.EVENT_BUS.register(DataCleanupManager.class);
+        
+        LOGGER.info("Data cleanup system initialized");
+    }
+    /**
+     * Periodically check for and clean up data for broken tables
+     */
+    @SubscribeEvent
+    public static void onServerTick(TickEvent.ServerTickEvent event) {
+        if (event.phase != TickEvent.Phase.END) return;
+        
+        // Increment counter
+        cleanupCounter++;
+        
+        // Run cleanup every CLEANUP_INTERVAL ticks and when we have broken tables to process
+        if (cleanupCounter >= CLEANUP_INTERVAL && !brokenTables.isEmpty()) {
+            cleanupCounter = 0;
+            
+            MinecraftServer server = event.getServer();
+            if (server != null) {
+                performCleanup(server);
+            }
+        }
+    }
+    
+    /**
+     * Perform cleanup of broken tables and orphaned data
+     */
+    private static void performCleanup(MinecraftServer server) {
+        LOGGER.info("Starting data cleanup for {} potentially broken tables", brokenTables.size());
+        
+        // Process broken tables
+        Iterator<Map.Entry<BlockPos, ResourceKey<Level>>> iterator = brokenTables.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<BlockPos, ResourceKey<Level>> entry = iterator.next();
+            BlockPos pos = entry.getKey();
+            ResourceKey<Level> dimension = entry.getValue();
+            
+            // Check if the table is actually gone
+            ServerLevel level = server.getLevel(dimension);
+            if (level != null && level.getBlockState(pos).getBlock() != 
+                 com.craigsmods.creativeprototyper.registry.ModBlocks.CREATIVE_TABLE.get()) {
+                
+                // Table is confirmed broken, clean up its data
+                cleanupTableData(server, pos, dimension);
+                
+                // Remove from tracking
+                iterator.remove();
+                LOGGER.info("Confirmed table at {} in {} is broken, cleaned up data", 
+                            pos, dimension.location());
+            }
+        }
+        
+        // Also periodically verify all stored table keys to find orphaned data
+        if (cleanupCounter == 0) { // Less frequent deep scan
+            verifyAllStoredTables(server);
+        }
+        
+        // Save changes to disk
+        TablePersistenceManager.saveTableConnections(server);
+    }
+    
+    /**
+     * Clean up data for a specific broken table
+     */
+    private static void cleanupTableData(MinecraftServer server, BlockPos pos, ResourceKey<Level> dimension) {
+        // Find all table keys associated with this position
+        List<TableKey> keysToRemove = new ArrayList<>();
+        
+        for (Map.Entry<TableKey, CreativeDimensionManager.SnapshotData> entry : 
+             CreativeDimensionManager.getTableData().entrySet()) {
+            
+            TableKey key = entry.getKey();
+            if (key.tablePos.equals(pos) && key.dimension.equals(dimension)) {
+                keysToRemove.add(key);
+            }
+        }
+        
+        // Remove found keys
+        for (TableKey key : keysToRemove) {
+            //CreativeDimensionManager.getTableData().remove(key);
+            
+            // Also remove from active keys if present
+            for (Map.Entry<UUID, TableKey> entry : 
+                 new HashMap<>(CreativeDimensionManager.getActiveTableKeys()).entrySet()) {
+                
+                if (entry.getValue().equals(key)) {
+                    CreativeDimensionManager.getActiveTableKeys().remove(entry.getKey());
+                }
+            }
+            
+            // Remove return portals associated with this table
+            cleanupReturnPortals(key);
+            
+            LOGGER.info("Removed data for table at {} in {} for player {}", 
+                        key.tablePos, key.dimension.location(), key.playerId);
+        }
+    }
+    
+    /**
+     * Clean up return portals associated with a table key
+     */
+    private static void cleanupReturnPortals(TableKey tableKey) {
+        Map<BlockPos, TableKey> returnPortals = CreativeDimensionManager.getReturnPortals();
+        
+        // Find portals pointing to this table
+        List<BlockPos> portalsToRemove = new ArrayList<>();
+        for (Map.Entry<BlockPos, TableKey> entry : returnPortals.entrySet()) {
+            if (entry.getValue().equals(tableKey)) {
+                portalsToRemove.add(entry.getKey());
+            }
+        }
+        
+        // Remove the portals
+        for (BlockPos portalPos : portalsToRemove) {
+            returnPortals.remove(portalPos);
+            LOGGER.info("Removed return portal at {} linked to table at {}", 
+                        portalPos, tableKey.tablePos);
+        }
+    }
+    
+    /**
+     * Verify all stored tables to find orphaned data
+     */
+    private static void verifyAllStoredTables(MinecraftServer server) {
+        LOGGER.info("Performing deep verification of all stored table data");
+        
+        // Track keys to remove
+        List<TableKey> keysToRemove = new ArrayList<>();
+        
+        // Check all table data entries
+        for (TableKey key : CreativeDimensionManager.getTableData().keySet()) {
+            ServerLevel level = server.getLevel(key.dimension);
+            
+            // If dimension doesn't exist or block at position isn't our table
+            if (level == null || !(level.getBlockState(key.tablePos).getBlock() instanceof 
+                  com.craigsmods.creativeprototyper.block.CreativeTableBlock)) {
+                
+                keysToRemove.add(key);
+                LOGGER.info("Deep scan: Found orphaned data for table at {} in {}", 
+                            key.tablePos, key.dimension.location());
+            }
+        }
+        
+        // Clean up orphaned data
+        for (TableKey key : keysToRemove) {
+            cleanupTableData(server, key.tablePos, key.dimension);
+        }
+        
+        LOGGER.info("Deep verification complete, removed {} orphaned table entries", keysToRemove.size());
+    }
+    
+    /**
+     * Run a manual cleanup (can be called from a command)
+     */
+    public static int runManualCleanup(MinecraftServer server) {
+        LOGGER.info("Running manual data cleanup");
+        
+        // Force immediate full verification
+        verifyAllStoredTables(server);
+        
+        // Save changes
+        TablePersistenceManager.saveTableConnections(server);
+        
+        return 1; // Success for command result
+    }
+}
+*/
